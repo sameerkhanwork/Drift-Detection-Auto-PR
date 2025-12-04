@@ -1,0 +1,66 @@
+name: Nightly Drift Detection
+
+on:
+  schedule:
+    # Runs at 2:00 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allows you to click "Run Now" to test it
+
+permissions:
+  id-token: write # Required for AWS OIDC
+  contents: write # Required to create branches
+  pull-requests: write # Required to create PRs
+
+jobs:
+  detect-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # Cost control cap
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::476114132725:role/github-action-openid # <--- PASTE YOUR ARN HERE
+          aws-region: us-east-1 # <--- UPDATE YOUR REGION
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan (Drift Check)
+        id: plan
+        # We use -detailed-exitcode: 0=No changes, 1=Error, 2=Drift
+        run: |
+          terraform plan -detailed-exitcode -out=drift.tfplan || echo "exit_code=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Create Pull Request if Drift Detected
+        if: steps.plan.outputs.exit_code == '2'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Drift Detected. Creating PR..."
+          
+          # Convert the binary plan to readable text for the PR body
+          terraform show -no-color drift.tfplan > plan.txt
+          
+          # Define branch name
+          BRANCH="drift-fix-$(date +%s)"
+          
+          # Create branch and push empty commit (required to open a PR)
+          git config user.name "Drift Bot"
+          git config user.email "bot@github.com"
+          git checkout -b $BRANCH
+          git commit --allow-empty -m "chore: drift detection placeholder"
+          git push origin $BRANCH
+          
+          # Create the PR
+          gh pr create \
+            --title "[DRIFT] Infrastructure Drift Detected" \
+            --body "Terraform detected changes. Merging this PR will run apply and fix the drift. <br><br> <pre>$(cat plan.txt | head -c 60000)</pre>" \
+            --base main \
+            --head $BRANCH
