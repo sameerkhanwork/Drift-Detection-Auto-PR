@@ -33,34 +33,47 @@ jobs:
 
       - name: Terraform Plan (Drift Check)
         id: plan
-        # We use -detailed-exitcode: 0=No changes, 1=Error, 2=Drift
+        # This logic captures the code regardless of success or failure
         run: |
-          terraform plan -detailed-exitcode -out=drift.tfplan || echo "exit_code=$?" >> $GITHUB_OUTPUT
-        continue-on-error: true
-
+          # Run plan. If it fails or detects drift, don't stop the script yet (set +e)
+          set +e
+          terraform plan -detailed-exitcode -out=drift.tfplan
+          
+          # Capture the exit code immediately
+          EXIT_CODE=$?
+          
+          echo "TERRAFORM EXIT CODE: $EXIT_CODE"
+          
+          # Write it to the GitHub Output
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # If it was a real error (1), fail the job manually now
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "Terraform failed with a syntax or auth error."
+            exit 1
+          fi
+ 
       - name: Create Pull Request if Drift Detected
-        if: steps.plan.outputs.exit_code == '2'
+        if: steps.plan.outputs.exit_code == '2' # Only run if Drift (2)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Drift Detected. Creating PR..."
-          
-          # Convert the binary plan to readable text for the PR body
+          echo "Drift Detected (Exit Code 2). Initiating PR..."
           terraform show -no-color drift.tfplan > plan.txt
           
-          # Define branch name
           BRANCH="drift-fix-$(date +%s)"
           
-          # Create branch and push empty commit (required to open a PR)
           git config user.name "Drift Bot"
           git config user.email "bot@github.com"
+          
+          # Ensure we are on a clean slate
           git checkout -b $BRANCH
           git commit --allow-empty -m "chore: drift detection placeholder"
           git push origin $BRANCH
           
-          # Create the PR
           gh pr create \
             --title "[DRIFT] Infrastructure Drift Detected" \
-            --body "Terraform detected changes. Merging this PR will run apply and fix the drift. <br><br> <pre>$(cat plan.txt | head -c 60000)</pre>" \
+            --body "Terraform detected changes. <br><br> <pre>$(cat plan.txt | head -c 60000)</pre>" \
             --base main \
             --head $BRANCH
+ 
