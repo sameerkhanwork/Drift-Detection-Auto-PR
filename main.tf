@@ -12,7 +12,7 @@ provider "aws" {
 }
 
 resource "aws_s3_bucket" "this" {
-  bucket = "my-unique-bucket-name-1234"  # must be globally unique
+  bucket = "sameer-khan-unique-bucket-name-45678"  # must be globally unique
 
   tags = {
     Name        = "demo-bucket"
